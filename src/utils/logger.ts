@@ -36,13 +36,13 @@ class Logger {
 
   debug(message: string, ...args: unknown[]): void {
     if (this.shouldLog('debug')) {
-      console.log(chalk.gray(this.formatMessage('debug', message, ...args)));
+      console.error(chalk.gray(this.formatMessage('debug', message, ...args)));
     }
   }
 
   info(message: string, ...args: unknown[]): void {
     if (this.shouldLog('info')) {
-      console.log(chalk.blue(this.formatMessage('info', message, ...args)));
+      console.error(chalk.blue(this.formatMessage('info', message, ...args)));
     }
   }
 
@@ -60,7 +60,7 @@ class Logger {
 
   success(message: string, ...args: unknown[]): void {
     if (this.shouldLog('info')) {
-      console.log(chalk.green(this.formatMessage('info', message, ...args)));
+      console.error(chalk.green(this.formatMessage('info', message, ...args)));
     }
   }
 

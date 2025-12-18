@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "mcp-security": {
+      "command": "node",
+      "args": ["dist/cli/index.js", "mcp"],
+      "cwd": "/Users/paulcapdeville/dev/mcp_security"
+    }
+  }
+}

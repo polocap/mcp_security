@@ -381,38 +381,68 @@ export class McpAnalyzerServer {
           }
 
           case 'get_code_graph': {
-            const { analysis_id } = args as { analysis_id: string; include_edges?: boolean };
-            // TODO: Implement knowledge graph retrieval
+            const { analysis_id, include_edges = true } = args as { analysis_id: string; include_edges?: boolean };
+            logger.info(`Getting code graph for analysis ${analysis_id}`);
+
+            // Check if graph exists, if not build it
+            let graph = this.orchestrator.getGraph(analysis_id);
+            if (graph.nodes.length === 0) {
+              logger.info('Graph not found, building...');
+              graph = await this.orchestrator.buildGraph(analysis_id);
+            }
+
+            const result = {
+              analysis_id,
+              stats: graph.stats,
+              nodes: graph.nodes.map(n => ({
+                id: n.id,
+                type: n.type,
+                name: n.name,
+                file: n.file,
+                line_start: n.lineStart,
+                line_end: n.lineEnd,
+              })),
+              edges: include_edges ? graph.edges.map(e => ({
+                id: e.id,
+                source_id: e.sourceId,
+                target_id: e.targetId,
+                type: e.type,
+              })) : undefined,
+            };
+
             return {
               content: [
                 {
                   type: 'text' as const,
-                  text: JSON.stringify({
-                    status: 'not_implemented',
-                    message: 'Knowledge graph feature coming soon',
-                    analysis_id,
-                  }, null, 2),
+                  text: JSON.stringify(result, null, 2),
                 },
               ],
             };
           }
 
           case 'analyze_impact': {
-            const { analysis_id, file } = args as {
+            const { analysis_id, file, function_name } = args as {
               analysis_id: string;
               file: string;
               function_name?: string;
             };
-            // TODO: Implement impact analysis
+            logger.info(`Analyzing impact for ${file}${function_name ? `:${function_name}` : ''}`);
+
+            const result = await this.orchestrator.analyzeImpact(analysis_id, file, function_name);
+
             return {
               content: [
                 {
                   type: 'text' as const,
                   text: JSON.stringify({
-                    status: 'not_implemented',
-                    message: 'Impact analysis feature coming soon',
-                    analysis_id,
-                    file,
+                    target_file: result.targetFile,
+                    target_function: result.targetFunction,
+                    impact_score: result.impactScore,
+                    direct_dependents: result.directDependents,
+                    transitive_dependents: result.transitiveDependents,
+                    affected_files_count: result.affectedFiles.length,
+                    affected_files: result.affectedFiles.slice(0, 50), // Limit to 50
+                    vulnerability_propagation: result.vulnerabilityPropagation,
                   }, null, 2),
                 },
               ],
@@ -618,3 +648,9 @@ export async function startMcpServer(): Promise<void> {
   const server = new McpAnalyzerServer();
   await server.start();
 }
+
+// Auto-start when run directly
+startMcpServer().catch((error) => {
+  console.error('Failed to start MCP server:', error);
+  process.exit(1);
+});

@@ -6,10 +6,14 @@ import { ScoreCalculator } from '../scoring/score-calculator.js';
 import { projectsRepository } from '../storage/repositories/projects.js';
 import { analysesRepository } from '../storage/repositories/analyses.js';
 import { findingsRepository } from '../storage/repositories/findings.js';
+import { graphRepository } from '../storage/repositories/graph.js';
+import { getGraphBuilder } from '../knowledge-graph/graph-builder.js';
+import { getImpactAnalyzer } from '../knowledge-graph/impact-analyzer.js';
 import type { Config, AnalysisRequest } from '../types/config.js';
 import type { Analysis, AnalysisResult, Project } from '../types/analysis.js';
 import type { ScannerResult, NormalizedFinding, Category } from '../types/findings.js';
 import type { AggregateScore } from '../types/scores.js';
+import type { CodeGraph, ImpactAnalysisResult } from '../types/graph.js';
 import { basename } from 'path';
 
 export interface OrchestratorOptions {
@@ -270,6 +274,72 @@ export class Orchestrator {
     const summary = findingsRepository.getSummaryByAnalysisId(analysisId);
 
     return { analysis, project, findings, summary };
+  }
+
+  /**
+   * Build knowledge graph for an analysis
+   */
+  async buildGraph(analysisId: string): Promise<CodeGraph> {
+    const graphLogger = logger.child('orchestrator-graph');
+    graphLogger.info(`Building knowledge graph for analysis ${analysisId}`);
+
+    const analysis = analysesRepository.findById(analysisId);
+    if (!analysis) {
+      throw new Error(`Analysis not found: ${analysisId}`);
+    }
+
+    const project = projectsRepository.findById(analysis.projectId);
+    if (!project) {
+      throw new Error(`Project not found for analysis: ${analysisId}`);
+    }
+
+    try {
+      const builder = getGraphBuilder();
+      const graph = await builder.buildGraph({
+        analysisId,
+        projectPath: project.path,
+      });
+
+      graphLogger.success(`Graph built: ${graph.stats.totalNodes} nodes, ${graph.stats.totalEdges} edges`);
+      return graph;
+    } catch (error) {
+      graphLogger.error(`Failed to build graph: ${error}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Get knowledge graph for an analysis
+   */
+  getGraph(analysisId: string): CodeGraph {
+    logger.debug(`Getting graph for analysis ${analysisId}`);
+    return graphRepository.getFullGraph(analysisId);
+  }
+
+  /**
+   * Analyze impact of changes to a file/function
+   */
+  async analyzeImpact(
+    analysisId: string,
+    targetFile: string,
+    targetFunction?: string
+  ): Promise<ImpactAnalysisResult> {
+    const impactLogger = logger.child('orchestrator-impact');
+    impactLogger.info(`Analyzing impact for ${targetFile}${targetFunction ? `:${targetFunction}` : ''}`);
+
+    const graph = graphRepository.getFullGraph(analysisId);
+    if (graph.nodes.length === 0) {
+      impactLogger.warn('No graph data found, building graph first...');
+      await this.buildGraph(analysisId);
+    }
+
+    const analyzer = getImpactAnalyzer();
+    await analyzer.loadGraph(analysisId);
+
+    const result = analyzer.analyzeFileImpact(analysisId, targetFile, targetFunction);
+    impactLogger.info(`Impact analysis complete: score=${result.impactScore}, affected files=${result.affectedFiles.length}`);
+
+    return result;
   }
 
   /**

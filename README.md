@@ -16,7 +16,7 @@ MCP orchestrator for code security, quality, and architecture analysis. This too
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                      Interfaces                                      │
+│                      Interfaces                                     │
 ├─────────────┬─────────────────────┬─────────────────────────────────┤
 │   CLI       │    REST API         │    MCP Server (for Claude)      │
 └─────────────┴─────────────────────┴─────────────────────────────────┘
@@ -94,6 +94,61 @@ Add to your Claude Desktop config:
   }
 }
 ```
+
+### MCP Integration (Claude Code)
+
+Claude Code supports MCP servers at two scopes:
+
+#### Project-level (single project)
+
+Create a `.mcp.json` file in your project root:
+
+```json
+{
+  "mcpServers": {
+    "mcp-security": {
+      "command": "node",
+      "args": ["/path/to/mcp_security/dist/cli/index.js", "mcp"],
+      "cwd": "/path/to/mcp_security"
+    }
+  }
+}
+```
+
+This makes the MCP server available only when working in that specific project.
+
+#### User-level (all projects)
+
+Add to your `~/.claude.json` file:
+
+```json
+{
+  "mcpServers": {
+    "mcp-security": {
+      "command": "node",
+      "args": ["/path/to/mcp_security/dist/cli/index.js", "mcp"],
+      "cwd": "/path/to/mcp_security"
+    }
+  }
+}
+```
+
+This makes the MCP server available globally across all your projects.
+
+#### After configuration
+
+1. Restart VSCode (or start a new Claude Code conversation)
+2. The MCP tools will be available as `mcp__mcp-security__<tool_name>`
+
+| Claude Code Tool | Description |
+|------------------|-------------|
+| `mcp__mcp-security__analyze_project` | Run full analysis on a project |
+| `mcp__mcp-security__get_analysis_report` | Get detailed report |
+| `mcp__mcp-security__compare_analyses` | Compare two analyses |
+| `mcp__mcp-security__list_project_analyses` | View analysis history |
+| `mcp__mcp-security__get_findings` | Get filtered findings |
+| `mcp__mcp-security__get_code_graph` | Get semantic code graph |
+| `mcp__mcp-security__analyze_impact` | Analyze impact of changes |
 
 ## MCP Tools
 

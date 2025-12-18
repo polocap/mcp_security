@@ -11,6 +11,7 @@ import { findingsRepository } from '../storage/repositories/findings.js';
 import { projectsRepository } from '../storage/repositories/projects.js';
 import { McpClientRegistry } from '../mcp-clients/registry.js';
 import { getDatabase } from '../storage/database.js';
+import { generateHtmlReport } from '../reports/html-generator.js';
 import type { Category } from '../types/findings.js';
 
 const program = new Command();
@@ -92,7 +93,7 @@ program
 program
   .command('report <analysis-id>')
   .description('Generate a report for a completed analysis')
-  .option('-f, --format <format>', 'Report format (json, md, console)', 'console')
+  .option('-f, --format <format>', 'Report format (json, md, html, console)', 'console')
   .option('-o, --output <file>', 'Output file path')
   .action(async (analysisId: string, options) => {
     try {
@@ -124,6 +125,11 @@ program
         } else {
           console.log(output);
         }
+      } else if (options.format === 'html') {
+        const output = generateHtmlReport(result);
+        const outputPath = options.output || `report-${analysisId.slice(0, 8)}.html`;
+        writeFileSync(outputPath, output);
+        console.log(chalk.green(`✓ HTML report saved to ${outputPath}`));
       } else {
         printConsoleReport(result);
       }
@@ -285,6 +291,187 @@ program
       const healthyCount = [...results.values()].filter(v => v).length;
       console.log(chalk.gray('\n─'.repeat(40)));
       console.log(`${healthyCount}/${results.size} servers healthy`);
+    } catch (error) {
+      console.error(chalk.red(`✗ Error: ${error instanceof Error ? error.message : error}`));
+      process.exit(1);
+    }
+  });
+
+// Graph commands
+const graphCmd = program
+  .command('graph')
+  .description('Knowledge graph operations');
+
+graphCmd
+  .command('build <analysis-id>')
+  .description('Build knowledge graph for an analysis')
+  .option('-v, --verbose', 'Verbose output')
+  .action(async (analysisId: string, options) => {
+    if (options.verbose) {
+      logger.setLevel('debug');
+    }
+
+    console.log(chalk.blue('\n🔗 Building Knowledge Graph\n'));
+
+    try {
+      const analysis = analysesRepository.findById(analysisId);
+      if (!analysis) {
+        console.error(chalk.red(`✗ Analysis not found: ${analysisId}`));
+        process.exit(1);
+      }
+
+      const project = projectsRepository.findById(analysis.projectId);
+      if (!project) {
+        console.error(chalk.red(`✗ Project not found for analysis`));
+        process.exit(1);
+      }
+
+      console.log(chalk.gray(`Project: ${project.path}`));
+      console.log(chalk.gray('Parsing AST and building graph...\n'));
+
+      const config = loadConfig();
+      const orchestrator = new Orchestrator({ config });
+      const graph = await orchestrator.buildGraph(analysisId);
+
+      console.log(chalk.green('✓ Graph built successfully!\n'));
+      console.log(chalk.bold('Statistics:'));
+      console.log(chalk.gray('─'.repeat(40)));
+      console.log(`  Total Nodes: ${graph.stats.totalNodes}`);
+      console.log(`  Total Edges: ${graph.stats.totalEdges}`);
+      console.log(chalk.bold('\n  Nodes by Type:'));
+      for (const [type, count] of Object.entries(graph.stats.nodesByType)) {
+        console.log(`    ${type}: ${count}`);
+      }
+      console.log(chalk.bold('\n  Edges by Type:'));
+      for (const [type, count] of Object.entries(graph.stats.edgesByType)) {
+        console.log(`    ${type}: ${count}`);
+      }
+
+      await orchestrator.shutdown();
+    } catch (error) {
+      console.error(chalk.red(`✗ Error: ${error instanceof Error ? error.message : error}`));
+      process.exit(1);
+    }
+  });
+
+graphCmd
+  .command('show <analysis-id>')
+  .description('Show knowledge graph statistics')
+  .action(async (analysisId: string) => {
+    try {
+      const analysis = analysesRepository.findById(analysisId);
+      if (!analysis) {
+        console.error(chalk.red(`✗ Analysis not found: ${analysisId}`));
+        process.exit(1);
+      }
+
+      const config = loadConfig();
+      const orchestrator = new Orchestrator({ config });
+      const graph = await orchestrator.getGraph(analysisId);
+
+      if (!graph || graph.stats.totalNodes === 0) {
+        console.log(chalk.yellow('\n⚠️  No knowledge graph found for this analysis.'));
+        console.log(chalk.gray('Run `mcp-analyze graph build <analysis-id>` first.\n'));
+        return;
+      }
+
+      console.log(chalk.blue('\n🔗 Knowledge Graph Statistics\n'));
+      console.log(chalk.bold('Nodes:'));
+      console.log(chalk.gray('─'.repeat(40)));
+      for (const [type, count] of Object.entries(graph.stats.nodesByType)) {
+        console.log(`  ${type.padEnd(15)} ${count}`);
+      }
+      console.log(chalk.gray('─'.repeat(40)));
+      console.log(`  ${'Total'.padEnd(15)} ${graph.stats.totalNodes}`);
+
+      console.log(chalk.bold('\nEdges:'));
+      console.log(chalk.gray('─'.repeat(40)));
+      for (const [type, count] of Object.entries(graph.stats.edgesByType)) {
+        console.log(`  ${type.padEnd(15)} ${count}`);
+      }
+      console.log(chalk.gray('─'.repeat(40)));
+      console.log(`  ${'Total'.padEnd(15)} ${graph.stats.totalEdges}\n`);
+
+      await orchestrator.shutdown();
+    } catch (error) {
+      console.error(chalk.red(`✗ Error: ${error instanceof Error ? error.message : error}`));
+      process.exit(1);
+    }
+  });
+
+program
+  .command('impact <analysis-id> <file>')
+  .description('Analyze impact of changes to a file')
+  .option('-f, --function <name>', 'Specific function to analyze')
+  .option('-v, --verbose', 'Verbose output')
+  .action(async (analysisId: string, file: string, options) => {
+    if (options.verbose) {
+      logger.setLevel('debug');
+    }
+
+    console.log(chalk.blue('\n💥 Impact Analysis\n'));
+
+    try {
+      const analysis = analysesRepository.findById(analysisId);
+      if (!analysis) {
+        console.error(chalk.red(`✗ Analysis not found: ${analysisId}`));
+        process.exit(1);
+      }
+
+      const config = loadConfig();
+      const orchestrator = new Orchestrator({ config });
+
+      console.log(chalk.gray(`Analyzing impact of: ${file}`));
+      if (options.function) {
+        console.log(chalk.gray(`Function: ${options.function}`));
+      }
+      console.log();
+
+      const result = await orchestrator.analyzeImpact(analysisId, file, options.function);
+
+      // Impact score visualization
+      const impactColor = result.impactScore >= 0.7 ? chalk.red :
+                          result.impactScore >= 0.4 ? chalk.yellow : chalk.green;
+      const impactBar = '█'.repeat(Math.round(result.impactScore * 20)) + '░'.repeat(20 - Math.round(result.impactScore * 20));
+
+      console.log(chalk.bold('Impact Score:'));
+      console.log(`  ${impactColor(impactBar)} ${(result.impactScore * 100).toFixed(1)}%\n`);
+
+      console.log(chalk.bold('Direct Dependents:'), result.directDependents.length);
+      if (result.directDependents.length > 0) {
+        console.log(chalk.gray('─'.repeat(40)));
+        for (const dep of result.directDependents.slice(0, 10)) {
+          console.log(`  ${chalk.cyan('•')} ${dep}`);
+        }
+        if (result.directDependents.length > 10) {
+          console.log(chalk.gray(`  ... and ${result.directDependents.length - 10} more`));
+        }
+      }
+
+      console.log(chalk.bold('\nTransitive Dependents:'), result.transitiveDependents.length);
+      if (result.transitiveDependents.length > 0) {
+        console.log(chalk.gray('─'.repeat(40)));
+        for (const dep of result.transitiveDependents.slice(0, 10)) {
+          console.log(`  ${chalk.magenta('•')} ${dep}`);
+        }
+        if (result.transitiveDependents.length > 10) {
+          console.log(chalk.gray(`  ... and ${result.transitiveDependents.length - 10} more`));
+        }
+      }
+
+      console.log(chalk.bold('\nAffected Files:'), result.affectedFiles.length);
+      if (result.affectedFiles.length > 0) {
+        console.log(chalk.gray('─'.repeat(40)));
+        for (const file of result.affectedFiles.slice(0, 15)) {
+          console.log(`  ${file}`);
+        }
+        if (result.affectedFiles.length > 15) {
+          console.log(chalk.gray(`  ... and ${result.affectedFiles.length - 15} more`));
+        }
+      }
+
+      console.log();
+      await orchestrator.shutdown();
     } catch (error) {
       console.error(chalk.red(`✗ Error: ${error instanceof Error ? error.message : error}`));
       process.exit(1);
