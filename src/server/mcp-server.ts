@@ -9,10 +9,13 @@ import {
 import { logger } from '../utils/logger.js';
 import { loadConfig } from '../utils/config.js';
 import { AnalysisRequestSchema } from '../types/config.js';
-
-// Import tool handlers (to be implemented)
-// import { handleAnalyzeProject } from './tools/analyze-project.js';
-// import { handleGetReport } from './tools/get-report.js';
+import { Orchestrator } from '../orchestrator/index.js';
+import { projectsRepository } from '../storage/repositories/projects.js';
+import { analysesRepository } from '../storage/repositories/analyses.js';
+import { findingsRepository } from '../storage/repositories/findings.js';
+import { getDatabase } from '../storage/database.js';
+import type { Analysis, Project } from '../types/analysis.js';
+import type { NormalizedFinding } from '../types/findings.js';
 
 const SERVER_NAME = 'mcp-code-analyzer';
 const SERVER_VERSION = '0.1.0';
@@ -20,9 +23,14 @@ const SERVER_VERSION = '0.1.0';
 export class McpAnalyzerServer {
   private server: Server;
   private config;
+  private orchestrator: Orchestrator;
 
   constructor() {
     this.config = loadConfig();
+    // Initialize database
+    getDatabase();
+    // Create orchestrator
+    this.orchestrator = new Orchestrator({ config: this.config });
     this.server = new Server(
       {
         name: SERVER_NAME,
@@ -212,39 +220,204 @@ export class McpAnalyzerServer {
         switch (name) {
           case 'analyze_project': {
             const validatedArgs = AnalysisRequestSchema.parse(args);
-            // TODO: Implement actual analysis
+            const result = await this.orchestrator.analyze({
+              source: validatedArgs.source,
+              scanners: validatedArgs.scanners,
+              languages: validatedArgs.languages,
+              branch: validatedArgs.branch,
+            });
             return {
               content: [
                 {
                   type: 'text' as const,
                   text: JSON.stringify({
-                    status: 'not_implemented',
-                    message: 'Analysis functionality coming soon',
-                    request: validatedArgs,
+                    analysis_id: result.analysis.id,
+                    status: result.analysis.status,
+                    scores: result.analysis.scores,
+                    grade: result.analysis.scores?.grade || null,
+                    findings_summary: {
+                      total: result.findings.length,
+                      by_severity: this.groupBySeverity(result.findings),
+                      by_category: this.groupByCategory(result.findings),
+                    },
+                    duration_ms: result.analysis.durationMs,
                   }, null, 2),
                 },
               ],
             };
           }
 
-          case 'get_analysis_report':
-          case 'compare_analyses':
-          case 'list_project_analyses':
-          case 'get_findings':
-          case 'get_code_graph':
-          case 'analyze_impact':
+          case 'get_analysis_report': {
+            const { analysis_id, format = 'json', include_findings = true } = args as {
+              analysis_id: string;
+              format?: 'json' | 'markdown' | 'summary';
+              include_findings?: boolean;
+            };
+
+            const analysis = analysesRepository.findById(analysis_id);
+            if (!analysis) {
+              throw new Error(`Analysis not found: ${analysis_id}`);
+            }
+
+            const findings = include_findings
+              ? findingsRepository.findByAnalysisId(analysis_id)
+              : [];
+
+            const project = projectsRepository.findById(analysis.projectId);
+
+            const report = this.formatReport({ analysis, findings, project }, format);
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: report,
+                },
+              ],
+            };
+          }
+
+          case 'compare_analyses': {
+            const { analysis_id_1, analysis_id_2 } = args as {
+              analysis_id_1: string;
+              analysis_id_2: string;
+            };
+
+            const analysis1 = analysesRepository.findById(analysis_id_1);
+            const analysis2 = analysesRepository.findById(analysis_id_2);
+
+            if (!analysis1 || !analysis2) {
+              throw new Error('One or both analyses not found');
+            }
+
+            const findings1 = findingsRepository.findByAnalysisId(analysis_id_1);
+            const findings2 = findingsRepository.findByAnalysisId(analysis_id_2);
+
+            const comparison = this.compareAnalyses(analysis1, analysis2, findings1, findings2);
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: JSON.stringify(comparison, null, 2),
+                },
+              ],
+            };
+          }
+
+          case 'list_project_analyses': {
+            const { project_path, limit = 10 } = args as {
+              project_path: string;
+              limit?: number;
+            };
+
+            const project = projectsRepository.findByPath(project_path);
+            if (!project) {
+              return {
+                content: [
+                  {
+                    type: 'text' as const,
+                    text: JSON.stringify({ analyses: [], message: 'Project not found' }, null, 2),
+                  },
+                ],
+              };
+            }
+
+            const analyses = analysesRepository.findByProjectId(project.id, limit);
+            const analysesList = analyses.map((a) => ({
+              id: a.id,
+              status: a.status,
+              started_at: a.startedAt,
+              completed_at: a.completedAt,
+              scores: a.scores ? {
+                overall: a.scores.overall,
+                security: a.scores.security,
+                quality: a.scores.quality,
+                dependencies: a.scores.dependencies,
+                architecture: a.scores.architecture,
+              } : null,
+              grade: a.scores?.grade || null,
+            }));
+
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: JSON.stringify({
+                    project: { id: project.id, name: project.name, path: project.path },
+                    analyses: analysesList,
+                    total: analysesList.length,
+                  }, null, 2),
+                },
+              ],
+            };
+          }
+
+          case 'get_findings': {
+            const { analysis_id, severity, category, file_pattern } = args as {
+              analysis_id: string;
+              severity?: string;
+              category?: string;
+              file_pattern?: string;
+            };
+
+            const findings = findingsRepository.findByAnalysisId(analysis_id, {
+              severity: severity as 'critical' | 'high' | 'medium' | 'low' | 'info' | undefined,
+              category: category as 'security' | 'quality' | 'dependencies' | 'architecture' | undefined,
+              filePattern: file_pattern,
+            });
+
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: JSON.stringify({
+                    analysis_id,
+                    filters: { severity, category, file_pattern },
+                    findings,
+                    total: findings.length,
+                  }, null, 2),
+                },
+              ],
+            };
+          }
+
+          case 'get_code_graph': {
+            const { analysis_id } = args as { analysis_id: string; include_edges?: boolean };
+            // TODO: Implement knowledge graph retrieval
             return {
               content: [
                 {
                   type: 'text' as const,
                   text: JSON.stringify({
                     status: 'not_implemented',
-                    message: `Tool ${name} coming soon`,
-                    args,
+                    message: 'Knowledge graph feature coming soon',
+                    analysis_id,
                   }, null, 2),
                 },
               ],
             };
+          }
+
+          case 'analyze_impact': {
+            const { analysis_id, file } = args as {
+              analysis_id: string;
+              file: string;
+              function_name?: string;
+            };
+            // TODO: Implement impact analysis
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: JSON.stringify({
+                    status: 'not_implemented',
+                    message: 'Impact analysis feature coming soon',
+                    analysis_id,
+                    file,
+                  }, null, 2),
+                },
+              ],
+            };
+          }
 
           default:
             throw new Error(`Unknown tool: ${name}`);
@@ -295,6 +468,143 @@ export class McpAnalyzerServer {
         ],
       };
     });
+  }
+
+  private groupBySeverity(findings: Array<{ severity: string }>): Record<string, number> {
+    const groups: Record<string, number> = {
+      critical: 0,
+      high: 0,
+      medium: 0,
+      low: 0,
+      info: 0,
+    };
+    for (const f of findings) {
+      const sev = f.severity;
+      if (sev && Object.prototype.hasOwnProperty.call(groups, sev)) {
+        groups[sev] = (groups[sev] ?? 0) + 1;
+      }
+    }
+    return groups;
+  }
+
+  private groupByCategory(findings: Array<{ category: string }>): Record<string, number> {
+    const groups: Record<string, number> = {
+      security: 0,
+      quality: 0,
+      dependencies: 0,
+      architecture: 0,
+    };
+    for (const f of findings) {
+      const cat = f.category;
+      if (cat && Object.prototype.hasOwnProperty.call(groups, cat)) {
+        groups[cat] = (groups[cat] ?? 0) + 1;
+      }
+    }
+    return groups;
+  }
+
+  private formatReport(
+    data: { analysis: Analysis | null; findings: NormalizedFinding[]; project: Project | null },
+    format: 'json' | 'markdown' | 'summary'
+  ): string {
+    const { analysis, findings, project } = data;
+
+    if (format === 'summary') {
+      return JSON.stringify({
+        analysis_id: analysis?.id,
+        project: project,
+        status: analysis?.status,
+        grade: analysis?.scores?.grade || null,
+        scores: analysis?.scores ? {
+          overall: analysis.scores.overall,
+          security: analysis.scores.security,
+          quality: analysis.scores.quality,
+          dependencies: analysis.scores.dependencies,
+          architecture: analysis.scores.architecture,
+        } : null,
+        findings_count: findings.length,
+      }, null, 2);
+    }
+
+    if (format === 'markdown') {
+      const lines = [
+        `# Analysis Report`,
+        ``,
+        `## Project: ${project?.name || 'Unknown'}`,
+        `**Path:** ${project?.path || 'N/A'}`,
+        `**Analysis ID:** ${analysis?.id}`,
+        `**Grade:** ${analysis?.scores?.grade || 'N/A'}`,
+        ``,
+        `## Scores`,
+        `| Category | Score |`,
+        `|----------|-------|`,
+        `| Overall | ${analysis?.scores?.overall ?? 'N/A'} |`,
+        `| Security | ${analysis?.scores?.security ?? 'N/A'} |`,
+        `| Quality | ${analysis?.scores?.quality ?? 'N/A'} |`,
+        `| Dependencies | ${analysis?.scores?.dependencies ?? 'N/A'} |`,
+        `| Architecture | ${analysis?.scores?.architecture ?? 'N/A'} |`,
+        ``,
+        `## Findings (${findings.length} total)`,
+      ];
+
+      const bySeverity = this.groupBySeverity(findings);
+      lines.push(`- Critical: ${bySeverity.critical}`);
+      lines.push(`- High: ${bySeverity.high}`);
+      lines.push(`- Medium: ${bySeverity.medium}`);
+      lines.push(`- Low: ${bySeverity.low}`);
+      lines.push(`- Info: ${bySeverity.info}`);
+
+      if (findings.length > 0) {
+        lines.push(``, `### Top Issues`);
+        const topFindings = findings.slice(0, 10);
+        for (const f of topFindings) {
+          lines.push(`- **[${f.severity.toUpperCase()}]** ${f.title}${f.file ? ` (${f.file}:${f.line || 0})` : ''}`);
+        }
+      }
+
+      return lines.join('\n');
+    }
+
+    // Default: JSON format
+    return JSON.stringify({ analysis, project, findings }, null, 2);
+  }
+
+  private compareAnalyses(
+    analysis1: Analysis,
+    analysis2: Analysis,
+    findings1: NormalizedFinding[],
+    findings2: NormalizedFinding[]
+  ): object {
+    const scoreDiff = (a: number | null | undefined, b: number | null | undefined) => {
+      if (a === null || a === undefined || b === null || b === undefined) return null;
+      return b - a;
+    };
+
+    const f1Ids = new Set(findings1.map(f => `${f.ruleId}:${f.file}`));
+    const f2Ids = new Set(findings2.map(f => `${f.ruleId}:${f.file}`));
+
+    const newIssues = findings2.filter(f => !f1Ids.has(`${f.ruleId}:${f.file}`));
+    const fixedIssues = findings1.filter(f => !f2Ids.has(`${f.ruleId}:${f.file}`));
+
+    return {
+      analysis_1: { id: analysis1.id, date: analysis1.startedAt, grade: analysis1.scores?.grade || null },
+      analysis_2: { id: analysis2.id, date: analysis2.startedAt, grade: analysis2.scores?.grade || null },
+      score_changes: {
+        overall: scoreDiff(analysis1.scores?.overall, analysis2.scores?.overall),
+        security: scoreDiff(analysis1.scores?.security, analysis2.scores?.security),
+        quality: scoreDiff(analysis1.scores?.quality, analysis2.scores?.quality),
+        dependencies: scoreDiff(analysis1.scores?.dependencies, analysis2.scores?.dependencies),
+        architecture: scoreDiff(analysis1.scores?.architecture, analysis2.scores?.architecture),
+      },
+      findings_summary: {
+        analysis_1_count: findings1.length,
+        analysis_2_count: findings2.length,
+        new_issues: newIssues.length,
+        fixed_issues: fixedIssues.length,
+      },
+      new_issues: newIssues.slice(0, 20),
+      fixed_issues: fixedIssues.slice(0, 20),
+    };
   }
 
   async start(): Promise<void> {

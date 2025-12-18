@@ -3,9 +3,10 @@ import { logger } from '../utils/logger.js';
 import type { Config, McpServerConfig } from '../types/config.js';
 
 // Import specific client implementations
-// import { SemgrepClient } from './semgrep-client.js';
-// import { TrivyClient } from './trivy-client.js';
-// import { EslintClient } from './eslint-client.js';
+import { SemgrepClient } from './semgrep-client.js';
+import { TrivyClient } from './trivy-client.js';
+import { EslintClient } from './eslint-client.js';
+import { SnykClient } from './snyk-client.js';
 
 export class McpClientRegistry {
   private clients: Map<string, BaseMcpClient> = new Map();
@@ -49,23 +50,32 @@ export class McpClientRegistry {
    * Create a client instance for a server
    */
   private createClient(serverName: string, config: McpServerConfig): BaseMcpClient | null {
-    // TODO: Implement specific client classes for each MCP server
-    // For now, return null as we haven't implemented the specific clients yet
-    logger.debug(`Client creation for ${serverName} not yet implemented`);
-    return null;
+    const retryConfig = config.retry || this.config.defaults.retry;
 
-    // Example of how this will work:
-    // switch (serverName) {
-    //   case 'semgrep':
-    //     return new SemgrepClient({ name: serverName, config, retryConfig: config.retry });
-    //   case 'trivy':
-    //     return new TrivyClient({ name: serverName, config, retryConfig: config.retry });
-    //   case 'eslint':
-    //     return new EslintClient({ name: serverName, config, retryConfig: config.retry });
-    //   default:
-    //     logger.warn(`Unknown server type: ${serverName}`);
-    //     return null;
-    // }
+    switch (serverName) {
+      case 'semgrep':
+        return new SemgrepClient({ config, retryConfig });
+
+      case 'trivy':
+        return new TrivyClient({ config, retryConfig });
+
+      case 'eslint':
+        return new EslintClient({ config, retryConfig });
+
+      case 'snyk':
+      case 'snyk-cli':
+        return new SnykClient({ config, retryConfig });
+
+      // Layer 1 servers (repos) don't need scan clients
+      case 'filesystem':
+      case 'github':
+        logger.debug(`Server ${serverName} is a repository access server, no scan client needed`);
+        return null;
+
+      default:
+        logger.warn(`No client implementation for server: ${serverName}`);
+        return null;
+    }
   }
 
   /**
