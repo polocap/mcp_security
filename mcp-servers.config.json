@@ -1,0 +1,131 @@
+{
+  "servers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/"],
+      "enabled": true,
+      "layer": 1,
+      "description": "Local filesystem access"
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_TOKEN": "${GITHUB_TOKEN}"
+      },
+      "enabled": true,
+      "layer": 1,
+      "description": "GitHub repository access"
+    },
+    "semgrep": {
+      "command": "npx",
+      "args": ["-y", "mcp-server-semgrep"],
+      "enabled": true,
+      "layer": 2,
+      "category": "security",
+      "description": "SAST security scanner",
+      "retry": {
+        "maxAttempts": 3,
+        "delayMs": 2000
+      }
+    },
+    "trivy": {
+      "command": "npx",
+      "args": ["-y", "mcp-server-trivy"],
+      "enabled": true,
+      "layer": 2,
+      "category": "security",
+      "description": "Container and IaC vulnerability scanner",
+      "retry": {
+        "maxAttempts": 3,
+        "delayMs": 2000
+      }
+    },
+    "eslint": {
+      "command": "npx",
+      "args": ["-y", "eslint-mcp-server"],
+      "enabled": true,
+      "layer": 2,
+      "category": "quality",
+      "description": "JavaScript/TypeScript linter"
+    },
+    "sonarqube": {
+      "command": "npx",
+      "args": ["-y", "mcp-server-sonarqube"],
+      "enabled": false,
+      "layer": 3,
+      "category": "quality",
+      "description": "Code quality and security analysis",
+      "env": {
+        "SONAR_URL": "${SONAR_URL}",
+        "SONAR_TOKEN": "${SONAR_TOKEN}"
+      }
+    },
+    "snyk": {
+      "command": "npx",
+      "args": ["-y", "snyk-mcp-server"],
+      "enabled": true,
+      "layer": 4,
+      "category": "dependencies",
+      "description": "Dependency vulnerability scanner",
+      "retry": {
+        "maxAttempts": 3,
+        "delayMs": 2000
+      }
+    },
+    "security-audit": {
+      "command": "npx",
+      "args": ["-y", "mcp-security-audit"],
+      "enabled": true,
+      "layer": 4,
+      "category": "dependencies",
+      "description": "NPM security audit"
+    }
+  },
+  "defaults": {
+    "retry": {
+      "maxAttempts": 3,
+      "delayMs": 2000,
+      "backoffMultiplier": 2
+    },
+    "timeout": 300000
+  },
+  "scoring": {
+    "weights": {
+      "security": 0.35,
+      "quality": 0.25,
+      "dependencies": 0.25,
+      "architecture": 0.15
+    },
+    "penalties": {
+      "security": {
+        "critical": 30,
+        "high": 20,
+        "medium": 10,
+        "low": 3,
+        "info": 0
+      },
+      "quality": {
+        "critical": 20,
+        "high": 12,
+        "medium": 6,
+        "low": 2,
+        "info": 0
+      },
+      "dependencies": {
+        "critical": 25,
+        "high": 15,
+        "medium": 8,
+        "low": 2,
+        "info": 0
+      },
+      "architecture": {
+        "critical": 15,
+        "high": 10,
+        "medium": 5,
+        "low": 2,
+        "info": 0
+      }
+    }
+  }
+}
