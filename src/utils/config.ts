@@ -8,6 +8,35 @@ const DEFAULT_CONFIG_FILENAME = 'mcp-servers.config.json';
 const USER_CONFIG_DIR = '.mcp-analyzer';
 
 /**
+ * Default configuration used when no config files are found
+ */
+const DEFAULT_CONFIG: Partial<Config> = {
+  servers: {},
+  defaults: {
+    retry: {
+      maxAttempts: 3,
+      delayMs: 2000,
+      backoffMultiplier: 2,
+    },
+    timeout: 300000,
+  },
+  scoring: {
+    weights: {
+      security: 0.35,
+      quality: 0.25,
+      dependencies: 0.25,
+      architecture: 0.15,
+    },
+    penalties: {
+      security: { critical: 25, high: 15, medium: 8, low: 3, info: 0 },
+      quality: { critical: 20, high: 12, medium: 6, low: 2, info: 0 },
+      dependencies: { critical: 25, high: 15, medium: 8, low: 3, info: 0 },
+      architecture: { critical: 15, high: 10, medium: 5, low: 2, info: 0 },
+    },
+  },
+};
+
+/**
  * Load configuration from multiple sources with priority:
  * 1. CLI flags (highest priority) - handled externally
  * 2. Project config (.mcp-analyzer.json in project root)
@@ -73,13 +102,17 @@ export function loadConfig(projectPath?: string): Config {
  * Deep merge multiple config objects
  */
 function mergeConfigs(configs: Partial<Config>[]): Partial<Config> {
+  // Start with default config, then merge any found configs on top
+  const baseConfig = { ...DEFAULT_CONFIG };
+
   if (configs.length === 0) {
-    throw new Error('No configuration files found');
+    logger.debug('No configuration files found, using defaults');
+    return baseConfig;
   }
 
   return configs.reduce((acc, config) => {
     return deepMerge(acc, config);
-  }, {} as Partial<Config>);
+  }, baseConfig as Partial<Config>);
 }
 
 /**
